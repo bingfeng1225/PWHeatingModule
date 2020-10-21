@@ -271,7 +271,7 @@ class HeatingSerialPort implements PWSerialPortListener {
             } else {
                 msg.arg1 = model & 0xFF;
             }
-            this.handler.sendMessage(msg);
+            this.handler.sendMessageDelayed(msg,5);
         }
     }
 
