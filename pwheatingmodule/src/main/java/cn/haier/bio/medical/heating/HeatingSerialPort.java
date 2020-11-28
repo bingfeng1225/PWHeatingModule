@@ -138,38 +138,88 @@ class HeatingSerialPort implements PWSerialPortListener {
     }
 
     private boolean ignorePackage() {
-        boolean result = false;
         if (this.system == 0x00) {
             for (byte item : HeatingTools.SYSTEM_TYPES) {
                 byte[] bytes = new byte[]{item, 0x10, 0x40, 0x1F};
                 int index = HeatingTools.indexOf(this.buffer, bytes);
                 if (index != -1) {
-                    result = true;
                     byte[] data = new byte[index];
                     this.buffer.readBytes(data, 0, data.length);
                     this.buffer.discardReadBytes();
                     if (null != this.listener && null != this.listener.get()) {
                         this.listener.get().onHeatingPrint("HeatingSerialPort 指令丢弃:" + HeatingTools.bytes2HexString(data, true, ", "));
                     }
-                    break;
+                    return this.processBytesBuffer();
                 }
             }
         } else {
             byte[] bytes = new byte[]{this.system, 0x10, 0x40, 0x1F};
             int index = HeatingTools.indexOf(this.buffer, bytes);
             if (index != -1) {
-                result = true;
                 byte[] data = new byte[index];
                 this.buffer.readBytes(data, 0, data.length);
                 this.buffer.discardReadBytes();
                 if (null != this.listener && null != this.listener.get()) {
                     this.listener.get().onHeatingPrint("HeatingSerialPort 指令丢弃:" + HeatingTools.bytes2HexString(data, true, ", "));
                 }
+                return this.processBytesBuffer();
             }
         }
-        return result;
+        return false;
     }
 
+
+    private boolean processBytesBuffer() {
+        if (this.buffer.readableBytes() < 4) {
+            return true;
+        }
+        byte system = this.buffer.getByte(0);
+        byte command = this.buffer.getByte(1);
+        if (!HeatingTools.checkSystemType(system) || !HeatingTools.checkCommandType(command)) {
+            return this.ignorePackage();
+        }
+        int lenth = (command == 0x10) ? 109 : 8;
+        if (this.buffer.readableBytes() < lenth) {
+            return true;
+        }
+        this.buffer.markReaderIndex();
+        byte[] data = new byte[lenth];
+        byte model = this.buffer.getByte(2);
+        this.buffer.readBytes(data, 0, lenth);
+        if (!HeatingTools.checkFrame(data)) {
+            this.buffer.resetReaderIndex();
+            //当前包不合法 丢掉正常的包头以免重复判断
+            this.buffer.skipBytes(2);
+            this.buffer.discardReadBytes();
+            return this.ignorePackage();
+        }
+        this.buffer.discardReadBytes();
+        if (!this.ready) {
+            this.ready = true;
+            if (null != this.listener && null != this.listener.get()) {
+                this.listener.get().onHeatingReady();
+            }
+        }
+        if (this.system != system) {
+            this.system = system;
+            if (null != this.listener && null != this.listener.get()) {
+                this.listener.get().onHeatingSystemChanged(this.system);
+            }
+        }
+        if (null != this.listener && null != this.listener.get()) {
+            this.listener.get().onHeatingPrint("HeatingSerialPort Recv:" + HeatingTools.bytes2HexString(data, true, ", "));
+        }
+        this.switchWriteModel();
+        Message msg = Message.obtain();
+        msg.what = command;
+        if (command == 0x10) {
+            msg.obj = data;
+        } else {
+            msg.arg1 = model & 0xFF;
+        }
+        this.handler.sendMessageDelayed(msg, 5);
+        return true;
+    }
 
     @Override
     public void onConnected(PWSerialPortHelper helper) {
@@ -217,62 +267,12 @@ class HeatingSerialPort implements PWSerialPortListener {
     }
 
     @Override
-    public void onByteReceived(PWSerialPortHelper helper, byte[] buffer, int length) throws IOException {
+    public boolean onByteReceived(PWSerialPortHelper helper, byte[] buffer, int length) throws IOException {
         if (!this.isInitialized() || !helper.equals(this.helper)) {
-            return;
+            return false;
         }
         this.buffer.writeBytes(buffer, 0, length);
-        while (this.buffer.readableBytes() >= 2) {
-            byte system = this.buffer.getByte(0);
-            byte command = this.buffer.getByte(1);
-            if (!HeatingTools.checkSystemType(system) || !HeatingTools.checkCommandType(command)) {
-                if (this.ignorePackage()) {
-                    continue;
-                } else {
-                    break;
-                }
-            }
-            int lenth = (command == 0x10) ? 109 : 8;
-            if (this.buffer.readableBytes() < lenth) {
-                break;
-            }
-            this.buffer.markReaderIndex();
-            byte[] data = new byte[lenth];
-            byte model = this.buffer.getByte(2);
-            this.buffer.readBytes(data, 0, lenth);
-            if (!HeatingTools.checkFrame(data)) {
-                this.buffer.resetReaderIndex();
-                //当前包不合法 丢掉正常的包头以免重复判断
-                this.buffer.skipBytes(4);
-                this.buffer.discardReadBytes();
-                continue;
-            }
-            this.buffer.discardReadBytes();
-            if (!this.ready) {
-                this.ready = true;
-                if (null != this.listener && null != this.listener.get()) {
-                    this.listener.get().onHeatingReady();
-                }
-            }
-            if (this.system != system) {
-                this.system = system;
-                if (null != this.listener && null != this.listener.get()) {
-                    this.listener.get().onHeatingSystemChanged(this.system);
-                }
-            }
-            if (null != this.listener && null != this.listener.get()) {
-                this.listener.get().onHeatingPrint("HeatingSerialPort Recv:" + HeatingTools.bytes2HexString(data, true, ", "));
-            }
-            this.switchWriteModel();
-            Message msg = Message.obtain();
-            msg.what = command;
-            if (command == 0x10) {
-                msg.obj = data;
-            } else {
-                msg.arg1 = model & 0xFF;
-            }
-            this.handler.sendMessageDelayed(msg,5);
-        }
+        return this.processBytesBuffer();
     }
 
 
